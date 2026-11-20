@@ -1062,6 +1062,82 @@ func TestCopy(t *testing.T) {
 		s.CheckGet(t, "d2", "value")
 	})
 
+	t.Run("hash field TTLs", func(t *testing.T) {
+		mustDo(t, c, "HSET", "hsrc", "exp", "v1", "keep", "v2", proto.Int(2))
+		mustDo(t, c,
+			"HEXPIRE", "hsrc", "60", "FIELDS", "1", "exp",
+			proto.Ints(1),
+		)
+		must1(t, c, "COPY", "hsrc", "hdst")
+		mustDo(t, c,
+			"HTTL", "hdst", "FIELDS", "2", "exp", "keep",
+			proto.Ints(60, -1),
+		)
+		mustDo(t, c,
+			"HGET", "hdst", "exp",
+			proto.String("v1"),
+		)
+
+		// The copy is independent: overwriting a source field drops only the
+		// source TTL, and FastForward expires the copied field on its own.
+		must0(t, c, "HSET", "hsrc", "exp", "updated")
+		mustDo(t, c,
+			"HTTL", "hsrc", "FIELDS", "1", "exp",
+			proto.Ints(-1),
+		)
+		mustDo(t, c,
+			"HTTL", "hdst", "FIELDS", "1", "exp",
+			proto.Ints(60),
+		)
+		s.FastForward(60 * time.Second)
+		mustNil(t, c, "HGET", "hdst", "exp")
+		mustDo(t, c,
+			"HGET", "hdst", "keep",
+			proto.String("v2"),
+		)
+		mustDo(t, c,
+			"HTTL", "hdst", "FIELDS", "2", "exp", "keep",
+			proto.Ints(-2, -1),
+		)
+	})
+
+	t.Run("hash field TTLs across DBs", func(t *testing.T) {
+		mustDo(t, c, "HSET", "hdb", "f", "v", proto.Int(1))
+		mustDo(t, c,
+			"HEXPIRE", "hdb", "30", "FIELDS", "1", "f",
+			proto.Ints(1),
+		)
+		must1(t, c, "COPY", "hdb", "hdbcopy", "DB", "3")
+		mustOK(t, c, "SELECT", "3")
+		mustDo(t, c,
+			"HTTL", "hdbcopy", "FIELDS", "1", "f",
+			proto.Ints(30),
+		)
+		mustOK(t, c, "SELECT", "0")
+	})
+
+	t.Run("REPLACE does not keep destination hash field TTLs", func(t *testing.T) {
+		mustDo(t, c, "HSET", "hfrom", "f1", "new", proto.Int(1))
+		mustDo(t, c,
+			"HEXPIRE", "hfrom", "10", "FIELDS", "1", "f1",
+			proto.Ints(1),
+		)
+		mustDo(t, c, "HSET", "hto", "f1", "old", "stale", "x", proto.Int(2))
+		mustDo(t, c,
+			"HEXPIRE", "hto", "100", "FIELDS", "2", "f1", "stale",
+			proto.Ints(1, 1),
+		)
+		must1(t, c, "COPY", "hfrom", "hto", "REPLACE")
+		mustDo(t, c,
+			"HGETALL", "hto",
+			proto.Strings("f1", "new"),
+		)
+		mustDo(t, c,
+			"HTTL", "hto", "FIELDS", "2", "f1", "stale",
+			proto.Ints(10, -2),
+		)
+	})
+
 	t.Run("errors", func(t *testing.T) {
 		mustDo(t, c, "COPY",
 			proto.Error(errWrongNumber("copy")),

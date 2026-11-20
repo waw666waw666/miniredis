@@ -834,11 +834,20 @@ func (m *Miniredis) copy(
 		return ErrKeyNotFound
 	}
 
+	// Replace any existing destination so leftover type data, key TTLs,
+	// and hash field TTLs cannot leak onto the copy.
+	if destDB.exists(dst) {
+		destDB.del(dst, true)
+	}
+
 	switch srcDB.t(src) {
 	case keyTypeString:
 		destDB.stringKeys[dst] = srcDB.stringKeys[src]
 	case keyTypeHash:
 		destDB.hashKeys[dst] = copyHashKey(srcDB.hashKeys[src])
+		if fieldTTLs, ok := srcDB.hashTTLs[src]; ok {
+			destDB.hashTTLs[dst] = copyHashFieldTTLs(fieldTTLs)
+		}
 	case keyTypeList:
 		destDB.listKeys[dst] = copyListKey(srcDB.listKeys[src])
 	case keyTypeSet:
@@ -858,6 +867,14 @@ func (m *Miniredis) copy(
 		destDB.ttl[dst] = v
 	}
 	return nil
+}
+
+func copyHashFieldTTLs(orig map[string]time.Duration) map[string]time.Duration {
+	cpy := make(map[string]time.Duration, len(orig))
+	for k, v := range orig {
+		cpy[k] = v
+	}
+	return cpy
 }
 
 func copyHashKey(orig hashKey) hashKey {
